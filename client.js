@@ -291,11 +291,13 @@ html:root body [role="treeitem"][aria-selected="true"] {
    The frame is matched through :has() on the shell overlay seat, and the
    columns through the host's own class suffixes. Both degrade to "no float"
    if the structure changes; neither can break the grid itself. */
-/* The sidebar resize strip is an 8px transparent hot zone sitting inside the
-   seam; removing it keeps the seam clean. Sidebar collapse still works from
-   the rail button. */
+/* v2.16.7-hotfix: keep the 8px resize hot zone interactive (it used to be
+   display:none, which silently removed sidebar resizing). Paint stays off so
+   the seam looks identical. */
 div:has(> [data-shell-overlay]) > [class*="_handle"] {
-  display: none;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
 div:has(> [data-shell-overlay]) {
@@ -359,6 +361,11 @@ html:root body [class*="_rightbarCol"] {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
     0 6px 16px rgba(0, 0, 0, 0.32);
+}
+
+/* v2.16.7-hotfix: 与左栏一致，Windows 原生标题栏模式下不做斜切
+   （transform 会成为 fixed 子元素的包含块，也会让右栏视觉与左栏不一致）。 */
+html:root:not([data-windows-titlebar]) body [class*="_rightbarCol"] {
   transform: perspective(1000px) rotateY(-7deg);
   transform-origin: 100% 50%;
 }
@@ -1141,10 +1148,10 @@ html:root body {
 
 /* Header controls (sidebar toggle, new session, utilities): same hover bar as
    every other interactive surface. */
-html:root body button[class*="_iconButton"],
+:where(html:root body button[class*="_iconButton"],
 html:root body button[aria-label="打开侧边栏"],
 html:root body button[aria-label="新建会话"],
-html:root body button[aria-label*="sidebar" i] {
+html:root body button[aria-label*="sidebar" i]) {
   position: relative;
 }
 
@@ -2208,43 +2215,23 @@ html:root body [class*="_overlay"]:has([class*="_navList"])
 
 /* Level-2 rows inside a page you opened (plugin list, schedule list, any panel
    that renders interactive rows): hairline bar, same gap, one bar per row. */
-html:root body [data-slot="main"]
+/* v2.16.7-hotfix2: 这里原来给 main 里所有 button 加 position:relative，再画 ::after 顶线。
+   宿主把「查看/Inspect」「移除」等按钮用 position:absolute 定位在卡片右上角，
+   relative 会把它们拽回流内、漂出卡片并把整卡撑高——和「文件卡片点不动」同一条病根，
+   宿主每加一个新模块就复发。改成纯 box-shadow 顶线，零定位副作用。 */
+:where(html:root body [data-slot="main"]
   :is(button:not([role="switch"]):not([aria-checked]), [role="button"]:not([role="switch"]):not([aria-checked]), [role="option"], [role="menuitem"]):not(
     :is(button, [role="button"], [role="option"], [role="menuitem"])
     :is(button, [role="button"], [role="option"], [role="menuitem"])
-  ):not([class*="_cardPreview"]) {
-  position: relative;
-}
-
-html:root body [data-slot="main"]
-  :is(button:not([role="switch"]):not([aria-checked]), [role="button"]:not([role="switch"]):not([aria-checked]), [role="option"], [role="menuitem"]):not(
-    :is(button, [role="button"], [role="option"], [role="menuitem"])
-    :is(button, [role="button"], [role="option"], [role="menuitem"])
-  ):not([class*="_cardPreview"])::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  pointer-events: none;
-  background: var(--dsw-alias-brand-primary);
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-html:root body [data-slot="main"]
-  :is(button:not([role="switch"]):not([aria-checked]), [role="button"]:not([role="switch"]):not([aria-checked]), [role="option"], [role="menuitem"]):not(
-    :is(button, [role="button"], [role="option"], [role="menuitem"])
-    :is(button, [role="button"], [role="option"], [role="menuitem"])
-  ):not([class*="_cardPreview"]):hover::after {
-  opacity: 1;
+  )):hover {
+  box-shadow: inset 0 1px 0 0 var(--dsw-alias-brand-primary);
 }
 
 /* Plugin / option rows: the host renders them as "_rows > _row" (see
    ui-plugin-manager), so the bar goes on the row itself, never on the switch
    inside it. */
-html:root body [data-slot="main"] [class*="_rows"] > [class*="_row"] {
+/* 同样归零特异性：行容器若被宿主自己定位成 absolute/fixed，别抢。 */
+:where(html:root body [data-slot="main"] [class*="_rows"] > [class*="_row"]) {
   position: relative;
 }
 
@@ -2423,8 +2410,8 @@ html:root body .dsh-hud-settings__row::before {
 
 
 
-/* ── Left sidebar: remaining blocks ──────────────────────────────────────── */ */
-   Group headers, the panel icon rail, the account footer and the collapsed
+/* ── Left sidebar: remaining blocks ──────────────────────────────────────── */
+/* Group headers, the panel icon rail, the account footer and the collapsed
    rail — all brought onto the same language as the session rows. */
 /* Workspace group headers (tree rows that are not selectable sessions). */
 html:root body [role="treeitem"]:not([aria-selected]) {
@@ -3220,24 +3207,40 @@ const HUD_SETTINGS_FALLBACK = ".dsh-hud-settings{position:relative;display:flex;
       const rowsCache = [];
 
       const render = () => {
+        // v2.16.7-hotfix3: 皮肤关闭时不再跑 HUD 逻辑（否则 place() 会把面板重新显示出来）。
+        if (document.documentElement.classList.contains('dsh-skin-off')) return;
         const segments = readSegments();
         const pairs = [];
 
-        // The host stopped rendering turn/step counts, so count them ourselves:
-        // one user message is a turn, one tool call is a step。
-        // 全树扫描很贵：缓存 2.5s，避免每 tick 扫两遍整个对话 DOM。
-        const nowTick = Date.now();
-        if (!render.lastCountAt || nowTick - render.lastCountAt > 2500) {
-          render.lastCountAt = nowTick;
-          render.lastTurns = document.querySelectorAll('[data-chat-flow-kind="user"]').length;
-          render.lastSteps = document.querySelectorAll('[data-chat-flow-kind="tool-call"]').length;
+        // v2.16.7-hotfix: 新版宿主又把「轮/步」放回 [data-composer-stat] 了，
+        // 我们若继续自计就会 6~7 行重复（还只数到已挂载的 DOM，数字也不对），
+        // 并把会话列表挤到只剩 100px。原生提供时直接用原生，缺了才自计兜底。
+        const nativeHasCounts = segments.some((seg) => /轮|步/.test(seg));
+        if (!nativeHasCounts) {
+          // 全树扫描很贵：缓存 2.5s，避免每 tick 扫两遍整个对话 DOM。
+          const nowTick = Date.now();
+          if (!render.lastCountAt || nowTick - render.lastCountAt > 2500) {
+            render.lastCountAt = nowTick;
+            render.lastTurns = document.querySelectorAll('[data-chat-flow-kind="user"]').length;
+            render.lastSteps = document.querySelectorAll('[data-chat-flow-kind="tool-call"]').length;
+          }
+          const turns = render.lastTurns || 0;
+          const steps = render.lastSteps || 0;
+          if (turns > 0) pairs.push({ text: 'turns', pair: { value: String(turns), unit: '轮', lead: '' } });
+          if (steps > 0) pairs.push({ text: 'steps', pair: { value: String(steps), unit: '步', lead: '' } });
         }
-        const turns = render.lastTurns || 0;
-        const steps = render.lastSteps || 0;
-        if (turns > 0) pairs.push({ text: 'turns', pair: { value: String(turns), unit: '轮', lead: '' } });
-        if (steps > 0) pairs.push({ text: 'steps', pair: { value: String(steps), unit: '步', lead: '' } });
 
         segments.forEach((segment) => { pairUp(segment).forEach((pair) => pairs.push({ text: segment, pair })); });
+
+        // v2.16.7-hotfix: 空面板不能常驻——欢迎页/新会话没有 stats 时，
+        // 只剩下四周括号和一条虚线，看着像坏掉的悬浮窗。
+        if (pairs.length === 0) {
+          host.dataset.empty = '1';
+          host.style.display = 'none';
+          if (spacer) spacer.style.display = 'none';
+          return;
+        }
+        host.dataset.empty = '0';
 
         // Build once, then only touch the text nodes: rebuilding innerHTML would
         // restart the bar transitions on every tick.
@@ -3350,7 +3353,7 @@ const HUD_SETTINGS_FALLBACK = ".dsh-hud-settings{position:relative;display:flex;
       const place = () => {
         try {
           const column = columnNode();
-          if (!column || column.getBoundingClientRect().width < 120) {
+          if (!column || document.documentElement.classList.contains('dsh-skin-off') || host.dataset.empty === '1' || column.getBoundingClientRect().width < 120) {
             host.style.display = 'none';
             spacer.style.display = 'none';
             return;
@@ -3953,6 +3956,7 @@ const HUD_SETTINGS_FALLBACK = ".dsh-hud-settings{position:relative;display:flex;
             style.disabled = !enabled;
             document.documentElement.classList.toggle('dsh-skin-off', !enabled);
             document.querySelectorAll('.dsh-hud-stats').forEach((node) => { node.style.display = enabled ? '' : 'none'; });
+            document.querySelectorAll('.dsh-hud-spacer').forEach((node) => { node.style.display = enabled ? '' : 'none'; });
             if (!enabled) {
               if (tokenDispose) { tokenDispose(); tokenDispose = null; }
               if (window.__paperSkin) window.__paperSkin.disabled = true;
